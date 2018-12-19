@@ -1,0 +1,82 @@
+#!/bin/bash
+
+# Please input architecture parameter argv[1]
+if [ "$#" -lt 1 ]
+then
+    echo "Please input architecture parameter argv[1]"
+    exit -1
+fi
+
+arch=$1
+prefix="data/"$arch"/"
+src_directory="src/"
+
+echo "Arch: "$arch
+echo "Data directory: "$prefix
+
+# 1. Generate ptx
+ptx_directory=$prefix"ptx/"
+mkdir -p $ptx_directory
+echo ".................................................................."
+echo "1. Generate .ptx files to "$ptx_directory" directory"
+echo "It may take serveral miniutes"
+echo ".................................................................."
+perl $src_directory"ptxgen.pl" $arch $ptx_directory
+
+# 2. Compile to cubins
+cubin_directory=$prefix"cubin/"
+mkdir -p $cubin_directory
+echo ".................................................................."
+echo "2. Compile .ptx file to cubin files in "$cubin_directory" directory"
+echo "It may take serveral miniutes"
+echo ".................................................................."
+ptx=$ptx_directory"*.ptx"
+for p in $ptx
+do
+     f=`echo $p | cut -d / -f 4 |cut -d . -f 1` 
+     fout=$cubin_directory""$f".cubin"
+     echo $fout
+     ptxas -arch $arch -m 64 $p -o $fout > /dev/null 2>&1
+done
+
+# 3. Disassembly to sass
+asm_directory=$prefix"asm/"
+mkdir -p $asm_directory
+echo ".................................................................."
+echo "3. Disassemble .cubin file to sass files in "$asm_directory" directory"
+echo "It may take serveral miniutes"
+echo ".................................................................."
+cubin=$cubin_directory"*.cubin"
+for p in $cubin
+do
+     f=`echo $p | cut -d / -f 4 | cut -d . -f 1`
+     fout=$asm_directory""$f".sass"
+     echo $fout
+     cuobjdump --gpu-architecture $arch --dump-sass $p > $fout
+done
+
+# 4.Put all sass results in one file
+echo ".................................................................."
+echo "4. Gathering results from ptxgen"
+echo ".................................................................."
+asm=$asm_directory"*.sass"
+if [ -f /tmp/all.sass ]
+then
+    rm /tmp/all.sass
+else
+    touch /tmp/all.sass
+fi
+
+for f in $asm
+do
+    cat $f >> /tmp/all.sass
+done
+
+# Ignore non-instruction lines
+awk '{if (NF >= 5) {$1 = ""; print $0} }' /tmp/all.sass > /tmp/all_inst.sass
+# Make instruction uniq
+python $src_directory"unique.py" /tmp/all_inst.sass > $prefix""$arch".sass"
+# Generate test cubin
+nvcc -cubin -arch $arch $src_directory"test.cu" -o $prefix""$arch".cubin"
+
+rm /tmp/all.sass /tmp/all_inst.sass

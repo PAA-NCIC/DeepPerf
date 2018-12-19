@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# Please input architecture parameter argv[1]
+if [ "$#" -lt 1 ]
+then
+    echo "Please input architecture parameter argv[1]"
+    exit -1
+fi
+
+arch=$1
+prefix="data/"$arch"/"
+src_directory="src/"
+asm_directory=$prefix
+output_directory="output/"$arch"/"
+output_file=$output_directory""$arch".operand"
+mkdir -p $output_directory
+rm -rf $output_file || true
+echo "Output file: "$output_file
+python $src_directory"operand.py" $asm_directory""$arch".sass" $arch $output_file

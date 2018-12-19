@@ -1,0 +1,720 @@
+# Kernel: sconv_update_C128_K128
+// debug:
+// mode1
+//-:-:-:-:00 MOV tmp_param0, param_test[0];
+//-:-:-:-:00 MOV tmp_param1, param_test[1];
+//-:-:-:-:00 SHL tmp_shl, tid, 0x2;
+//-:-:-:-:00 IADD tmp_param00.CC, tmp_shl, tmp_param0;
+//-:-:-:-:00 IADD.X tmp_param01, RZ, tmp_param1;
+//-:-:-:-:00 I2F.F32.U32 rst, rst;
+//-:-:-:-:00 ST.E [tmp_param00], rst;
+//-:-:-:-:00 EXIT;
+
+// mode2
+//-:-:-:-:00 MOV tmp_param0, param_test[0];
+//-:-:-:-:00 MOV tmp_param1, param_test[1];
+//
+//-:-:-:-:00 MOV32I k, 0x40000000;
+//-:-:-:-:00 ST.E [tmp_param0], k;
+//-:-:-:-:00 EXIT;
+
+// modify steps:
+// XMAD->IMAD
+// shared memory addresses->RZ
+// LDG->LD
+// LEA->MOV, IADD, SHL
+// XMAD.LO2C->IMAD.U32.U32
+// XMAD.PSL->IMAD.U32.U32
+// VMAD->IMAD, IADD
+// MOV->MOV32I
+// IADD3->IADD, IADD
+// POPC
+// ST.CG->ST
+// control code
+// comments
+// LDS.U->LDS
+// LOP3
+// register<0-7>->register<0-3>, register<4-7>
+// avoid register conflicts
+// PT: 0xffffff
+
+// initial->1200
+// bank conflict->1288
+// alignment+dual issue+reuse->1600
+// half ldg.128->1700
+// all ldg.128->1777
+// control codes->1900
+// scheduling->1937
+// reduce unnecessary instructions->2100
+
+<CONSTANT_MAPPING>
+    addr_zero : 4x<(128 * 16 + 32) * 4 + 0>
+    addr_m    : 4x<(128 * 16 + 32) * 4 + 4>
+    addr_q    : 4x<(128 * 16 + 32) * 4 + 5>
+    szBuf     : (128 * 16 + 32)
+
+    param_test[0]   : c[0x0][0x140]
+    param_test[1]   : c[0x0][0x144]
+    param_F[0]      : c[0x0][0x148]
+    param_F[1]      : c[0x0][0x14c]
+    param_I[0]      : c[0x0][0x150]
+    param_I[1]      : c[0x0][0x154]
+    param_E[0]      : c[0x0][0x158]
+    param_E[1]      : c[0x0][0x15c]
+    param_alpha     : c[0x0][0x160]
+    param_N         : c[0x0][0x164]
+    param_K         : c[0x0][0x168]
+    param_D         : c[0x0][0x16c]
+    param_H         : c[0x0][0x170]
+    param_W         : c[0x0][0x174]
+    param_WN        : c[0x0][0x178]
+    param_HWN       : c[0x0][0x17c]
+    param_DHWN      : c[0x0][0x180]
+    param_C         : c[0x0][0x184]
+    param_CRST      : c[0x0][0x188]
+    param_RST       : c[0x0][0x18c]
+    param_magic_RST : c[0x0][0x190]
+    param_shift_RST : c[0x0][0x194]
+    param_RS        : c[0x0][0x198]
+    param_magic_RS  : c[0x0][0x19c]
+    param_shift_RS  : c[0x0][0x1a0]
+    param_S         : c[0x0][0x1a4]
+    param_magic_S   : c[0x0][0x1a8]
+    param_shift_S   : c[0x0][0x1ac]
+    param_pad_d     : c[0x0][0x1b0]
+    param_pad_h     : c[0x0][0x1b4]
+    param_pad_w     : c[0x0][0x1b8]
+    param_str_d     : c[0x0][0x1bc]
+    param_str_h     : c[0x0][0x1c0]
+    param_str_w     : c[0x0][0x1c4]
+    param_P         : c[0x0][0x1c8]
+    param_Q         : c[0x0][0x1cc]
+    param_PQ        : c[0x0][0x1d0]
+    param_QN        : c[0x0][0x1d4]
+    param_PQN       : c[0x0][0x1d8]
+    param_MPQN      : c[0x0][0x1dc]
+    param_magic_Q   : c[0x0][0x1e0]
+    param_shift_Q   : c[0x0][0x1e4]
+    param_magic_PQ  : c[0x0][0x1e8]
+    param_shift_PQ  : c[0x0][0x1ec]
+    param_grid_P    : c[0x0][0x1f0]
+    param_grid_Q    : c[0x0][0x1f4]
+    param_grid_PQ   : c[0x0][0x1f8]
+
+</CONSTANT_MAPPING>
+
+<REGISTER_MAPPING>
+
+    0-63 : czero<00-63>
+
+     3, 2,11,10,19,18,27,26 : cx<0-7>y0
+     7, 6,15,14,23,22,31,30 : cx<0-7>y1
+     1, 0, 9, 8,17,16,25,24 : cx<0-7>y2
+     5, 4,13,12,21,20,29,28 : cx<0-7>y3
+    35,34,43,42,51,50,59,58 : cx<0-7>y4
+    39,38,47,46,55,54,63,62 : cx<0-7>y5
+    33,32,41,40,49,48,57,56 : cx<0-7>y6
+    37,36,45,44,53,52,61,60 : cx<0-7>y7
+
+    64-67 ~ blkI, blkE
+    68-111 ~ tidX, tidY, tid1, tid7, tid128, shiftX, blkMPQ, pq, m
+
+    64-95 ~ tidYY, mm, mt, pr, y, z, y0, yH, z0, zD, bounds_yz, c, r, t, rs, rst
+    64-95 ~ qs, x, x0, xW, bounds_x, ti, te, Q
+
+    64-67 : j0Ex<0-3>
+    68-71 : j0Iy<0-3>
+    72-75 : j0Ex<4-7>
+    76-79 : j0Iy<4-7>
+    80-83 : j1Ex<0-3>
+    84-87 : j1Iy<0-3>
+    88-91 : j1Ex<4-7>
+    92-95 : j1Iy<4-7>
+
+    96-99   : loadI<0-3>
+    100-103 : loadE<0-3>
+    104-107 : loadI<4-7>
+    108-111 : loadE<4-7>
+
+    112-115 : trackI<0-1>, trackE<0-1>
+
+    116-124 ~ writeS, loopN, e, i, p, q, k, crst, s
+    125-127 : swapBuf, readIs, readEs
+    128-129 : tmp_data, tmp_shl
+    130-131 : tmp_param0, tmp_param1
+    132 : p_and
+    133 : tid
+    134-135 : tmp_param0<0-1>
+
+     68-83  : c<0-7>, track00F<0-1>, track04F<0-1>, track08F<0-1>, track12F<0-1>
+    84-124  ~ writeCs, readCs, K1, K60, crst<00|04|08|12>, alpha, K, K4, tid31, tid96, kk, tf, t128
+
+</REGISTER_MAPPING>
+
+-:-:-:-:00 S2R tid,    SR_TID.X;
+-:-:-:-:00 S2R blkMPQ, SR_CTAID.X; // M
+-:-:-:-:00 S2R blkI,   SR_CTAID.Y; // CRST / 128
+-:-:-:-:00 S2R blkE,   SR_CTAID.Z; // K / 128
+
+// tidX = tid >> 1
+// tidX = 0 : 1 : 128
+// tidY = (tid & 1) << 2
+// tidY = 0, 4
+// shiftX = (tid & 1) << 4
+// shiftX = 0, 16
+-:-:-:-:00 LOP.AND tid1,   tid,  1;
+-:-:-:-:00 SHR.U32 tidX,   tid,  1;
+-:-:-:-:00 SHL     tidY,   tid1, 2;
+-:-:-:-:00 SHL     shiftX, tid1, 4;
+
+-:-:-:-:00 STS.128 [RZ + addr_zero], RZ;
+
+<CODE>
+    return join '', map sprintf("-:-:-:-:00 LDS.128 czero%02d, [RZ + addr_zero];\n", $_ * 4), 0..15;
+</CODE>
+
+-:-:-:-:00 PSETP.AND.AND P0, PT, PT, PT, PT;
+
+// m  = blkMPQ / PQ
+// pq = blkMPQ % PQ
+// m = 0 : 1 : M - 1;
+// PQ = 1;
+// pq = 0
+-:-:-:-:00 IMAD.U32.U32 m, blkMPQ, param_magic_PQ, RZ;
+-:-:-:-:00 SHR.U32   m, m, param_shift_PQ;
+-:-:-:-:00 IMAD pq,  m, param_grid_PQ, RZ;
+-:-:-:-:00 IADD pq, -pq, blkMPQ;
+// p = pq / Q
+// q = pq % Q
+// p = 0
+// q = 0
+-:-:-:-:00 IMAD.U32.U32 p, pq, param_magic_Q, RZ;
+-:-:-:-:00 SHR.U32   p, p, param_shift_Q;
+-:-:-:-:00 IMAD  q,  p, param_grid_Q, RZ;
+-:-:-:-:00 IADD  q, -q, pq;
+
+// We need to be able to restore m and q at each P iteration
+// Register spill to shared
+-:-:-:-:00 STS [RZ + addr_m], m;
+-:-:-:-:00 STS [RZ + addr_q], q;
+
+// tidX = 0 : 1 : 127
+// tidY = 0, 4
+// shiftX = 0, 16
+// writeS <= (512 + 128 + 16) * 4
+// if tidY > 512, shiftX = 16
+// writeS = (tidY * 128 + tidX + shiftX) * 4 + szBuf * 8
+//      --------------------
+//      --------------------
+// 0, 4 --------------------
+// tidY --------------------
+//      ---- tidX = 0 : 1 : 127
+
+-:-:-:-:00 ISCADD writeS, tidY, tidX, 7;
+-:-:-:-:00 IADD   writeS, writeS, shiftX;
+-:-:-:-:00 ISCADD writeS, writeS, 4x<szBuf * 2>, 2;
+
+// readIs = (((tid & 0x70) >> 3) | (tid & 1)) << 4
+// [6][5][4][0] * 16;
+// readIs = 0 : 4 : 63
+-:-:-:-:00 LOP.AND readIs, tid,    0x70;
+-:-:-:-:00 SHR.U32 readIs, readIs, 3;
+-:-:-:-:00 LOP.OR  readIs, readIs, tid1;
+-:-:-:-:00 SHL     readIs, readIs, 4;
+
+// readEs = ((tid128 >> 4) | ((tid >> 1) & 7)) << 4 + szBuf;
+// [7][3][2][1] * 16 + szBuf * 4;
+// readEs = 0 : 4 : 63
+-:-:-:-:00 LOP.AND tid128, tid,    128;
+-:-:-:-:00 BFE.U32 tid7,   tid,    0x301; // 3 bits at position 1
+-:-:-:-:00 SHR.U32 readEs, tid128, 4;
+-:-:-:-:00 LOP.OR  readEs, readEs, tid7;
+-:-:-:-:00 ISCADD  readEs, readEs, 4x<szBuf>, 4;
+
+-:-:-:-:00 MOV32I swapBuf, -4x<szBuf * 2>;
+
+// crst = blockI * 128 + tidX
+-:-:-:-:00 ISCADD crst, blkI, tidX, 7;
+
+// k = blockE * 128 + tidX
+-:-:-:-:00 ISCADD k, blkE, tidX, 7;
+
+// loopN = N 
+-:-:-:-:00 MOV loopN, param_N;
+
+NEXT_P:
+
+// tidYY = 0 : 1 : 255
+-:-:-:-:00 S2R tidYY, SR_TID.X;
+-:-:-:-:00 LDS mm, [RZ + addr_m];
+-:-:-:-:00 LDS q, [RZ + addr_q];
+
+// c   = crst / RST
+// rst = crst % RST
+-:-:-:-:00 IMAD.U32.U32 c, crst, param_magic_RST, RZ;
+-:-:-:-:00 SHR.U32   c, c, param_shift_RST;
+-:-:-:-:00 IMAD rst, c, param_RST, RZ;
+-:-:-:-:00 IADD rst, -rst, crst;
+
+// t  = rst / RS
+// rs = rst % RS
+-:-:-:-:00 IMAD.U32.U32 t, rst, param_magic_RS, RZ;
+-:-:-:-:00 SHR.U32   t, t, param_shift_RS;
+-:-:-:-:00 IMAD  rs, t, param_RS, RZ;
+-:-:-:-:00 IADD  rs, -rs, rst;
+// r = rs / S
+// s = rs % S
+-:-:-:-:00 IMAD.U32.U32 r, rs, param_magic_S, RZ;
+-:-:-:-:00 SHR.U32 r, r, param_shift_S;
+-:-:-:-:00 IMAD s, r, param_S, RZ;
+-:-:-:-:00 IADD s, -s, rs;
+// y = p * u - pad_h + r
+// z = m * w - pad_d + t
+-:-:-:-:00 IMAD pr, p,  param_str_h, RZ;
+-:-:-:-:00 IMAD mt, mm, param_str_d, RZ;
+-:-:-:-:00 IADD y, pr, -param_pad_h;
+-:-:-:-:00 IADD y, y, r;
+-:-:-:-:00 IADD z, mt, -param_pad_d;
+-:-:-:-:00 IADD z, z, t;
+// e = k * MPQN + m * PQN + p * QN + tidYY
+// tidYY = 0, 4
+-:-:-:-:00 LOP.AND tidYY, tidYY, 1;
+-:-:-:-:00 SHL     tidYY, tidYY, 2;
+-:-:-:-:00 IMAD.U32.U32 e, p,  param_QN, tidYY;
+-:-:-:-:00 IMAD.U32.U32 e, mm, param_PQN, e;
+-:-:-:-:00 IMAD.U32.U32 e, k,  param_MPQN, e;
+// i = c * DHWN + z * HWN + y * WN + tidYY
+-:-:-:-:00 IMAD.U32.U32 i, y, param_WN,   tidYY;
+-:-:-:-:00 IMAD.U32.U32 i, z, param_HWN,  i;
+-:-:-:-:00 IMAD.U32.U32 i, c, param_DHWN, i;
+// mode1
+// -:-:-:-:00 MOV tmp_param0, param_test[0];
+// -:-:-:-:00 MOV tmp_param1, param_test[1];
+// -:-:-:-:00 SHL tmp_shl, tid, 0x2;
+// -:-:-:-:00 IADD tmp_param00.CC, tmp_shl, tmp_param0;
+// -:-:-:-:00 IADD.X tmp_param01, RZ, tmp_param1;
+// -:-:-:-:00 I2F.F32.U32 i, i;
+// -:-:-:-:00 ST.E [tmp_param00], i;
+// -:-:-:-:00 EXIT;
+// bounds_yz = y < 0 || y > H || z < 0 || z > D ? -1 : 0
+-:-:-:-:00 ISET.LT.AND y0, y, RZ, PT;
+-:-:-:-:00 ISET.GE.AND yH, y, param_H, PT;
+-:-:-:-:00 ISET.LT.AND z0, z, RZ, PT;
+-:-:-:-:00 ISET.GE.AND zD, z, param_D, PT;
+-:-:-:-:00 LOP.OR bounds_yz, y0, yH;
+-:-:-:-:00 LOP.OR bounds_yz, bounds_yz, z0;
+-:-:-:-:00 LOP.OR bounds_yz, bounds_yz, zD;
+// doLoadCRST = crst < CRST && bounds_yz == 0
+-:-:-:-:00 ISETP.LT.AND P4, PT, crst, param_CRST, PT;
+-:-:-:-:00 ISETP.EQ.AND P4, PT, bounds_yz, RZ, P4;
+// p += grid_P
+// p = p + 1
+-:-:-:-:00 IADD p, p, param_grid_P;
+
+-:-:-:-:00 ISETP.LT.AND P6, PT, p, param_P, PT;
+
+NEXT_Q:
+
+// Zigzag q but only if grid_P < P
+-:-:-:-:00 LOP.AND p_and, p, 1;
+// useless?
+-:-:-:-:00 ISETP.NE.AND P1, PT, RZ, p, PT;
+// Q = 1
+-:-:-:-:00 MOV Q, param_grid_P;
+// 1 < param_P ? Q = -1 + -q + paramQ : Q = 0
+-:-:-:-:00 ISETP.LT.AND P1, PT, Q, param_P, P1;
+-:-:-:-:00 MOV32I Q, -1;
+-:-:-:-:00 @P1 IADD tmp_data, -q, param_Q;
+-:-:-:-:00 @P1 IADD Q, tmp_data, Q;
+-:-:-:-:00 @!P1 MOV Q, q;
+// k < K
+-:-:-:-:00 ISETP.LT.AND P3, PT, k, param_K, PT;
+// qs = q * v - pad_w
+// x = qs + s
+-:-:-:-:00 IMAD qs, Q, param_str_w, RZ;
+-:-:-:-:00 IADD x, qs, -param_pad_w;
+-:-:-:-:00 IADD x, x, s;
+// bounds_x = x < 0 || x > W ? -1 : 0
+-:-:-:-:00 ISET.LT.AND x0, x, RZ, PT;
+-:-:-:-:00 ISET.GE.AND xW, x, param_W, PT;
+-:-:-:-:00 LOP.OR bounds_x, x0, xW;
+// doLoad = crst < CRST && bounds_yz == 0 && bounds_x == 0
+-:-:-:-:00 ISETP.EQ.AND P2, PT, bounds_x, RZ, P4;
+// trackI = I + i + x * N
+-:-:-:-:00 IMAD ti, x, param_N, i;
+//-:-:-:-:00 LEA      trackI0.CC, ti, param_I[0],     2;
+//-:-:-:-:00 LEA.HI.X trackI1,    ti, param_I[1], RZ, 2;
+-:-:-:-:00 MOV tmp_param0, param_I[0];
+-:-:-:-:00 MOV tmp_param1, param_I[1];
+-:-:-:-:00 SHL tmp_shl, ti, 0x2;
+-:-:-:-:00 IADD trackI0.CC, tmp_shl, tmp_param0;
+-:-:-:-:00 IADD.X trackI1, RZ, tmp_param1;
+// trackE = E + e + q * N
+-:-:-:-:00 IMAD te, Q, param_N, e;
+//-:-:-:-:00 LEA      trackE0.CC, te, param_E[0],     2;
+//-:-:-:-:00 LEA.HI.X trackE1,    te, param_E[1], RZ, 2;
+-:-:-:-:00 MOV tmp_param0, param_E[0];
+-:-:-:-:00 MOV tmp_param1, param_E[1];
+-:-:-:-:00 SHL tmp_shl, te, 0x2;
+-:-:-:-:00 IADD trackE0.CC, tmp_shl, tmp_param0;
+-:-:-:-:00 IADD.X trackE1, RZ, tmp_param1;
+// q += grid_Q
+// q = q + 1
+-:-:-:-:00 IADD q, q, param_grid_Q;
+-:-:-:-:00 ISETP.LT.AND P5, PT, q, param_Q, PT;
+
+-:-:-:-:00 @!P0 IADD loopN, loopN, param_N;
+
+-:-:-:-:00 @!P0 BRA.U NEXT_PQ;
+
+-:-:-:-:00 PSETP.AND.AND P0, PT, PT, PT, !PT;
+
+-:-:-:-:00 @P2 LD.E.CI.128 loadI0, [trackI + 4x<0>];
+-:-:-:-:00 @P2 LD.E.CI.128 loadI4, [trackI + 4x<8>];
+-:-:-:-:00 @!P2 LDS.128 loadI0, [RZ + addr_zero];
+-:-:-:-:00 @!P2 LDS.128 loadI4, [RZ + addr_zero];
+
+-:-:-:-:00 ISETP.LE.AND P1, PT, loopN, 32, PT;
+
+-:-:-:-:00 @P3 LD.E.CI.128 loadE0, [trackE + 4x<0>];
+-:-:-:-:00 @P3 LD.E.CI.128 loadE4, [trackE + 4x<8>];
+-:-:-:-:00 @!P3 LDS.128 loadE0, [RZ + addr_zero];
+-:-:-:-:00 @!P3 LDS.128 loadE4, [RZ + addr_zero];
+
+-:-:-:-:00 STS [writeS + 4x< 0*128>], loadI0;
+-:-:-:-:00 STS [writeS + 4x< 1*128>], loadI1;
+-:-:-:-:00 STS [writeS + 4x< 2*128>], loadI2;
+-:-:-:-:00 STS [writeS + 4x< 3*128>], loadI3;
+
+-:-:-:-:00 STS [writeS + 4x< 8*128 + 16>], loadI4;
+-:-:-:-:00 STS [writeS + 4x< 9*128 + 16>], loadI5;
+-:-:-:-:00 STS [writeS + 4x<10*128 + 16>], loadI6;
+-:-:-:-:00 STS [writeS + 4x<11*128 + 16>], loadI7;
+
+-:-:-:-:00 IADD   trackI0.CC, trackI0, 4x<16>;
+-:-:-:-:00 PSETP.AND.AND P5, PT, P1, P5, PT;
+
+-:-:-:-:00 STS [writeS + 4x< 0*128 + szBuf>], loadE0;
+-:-:-:-:00 STS [writeS + 4x< 1*128 + szBuf>], loadE1;
+-:-:-:-:00 STS [writeS + 4x< 2*128 + szBuf>], loadE2;
+-:-:-:-:00 STS [writeS + 4x< 3*128 + szBuf>], loadE3;
+
+-:-:-:-:00 PSETP.AND.AND P6, PT, P1, P6, PT;
+
+-:-:-:-:00 STS [writeS + 4x< 8*128 + szBuf + 16>], loadE4;
+-:-:-:-:00 STS [writeS + 4x< 9*128 + szBuf + 16>], loadE5;
+-:-:-:-:00 STS [writeS + 4x<10*128 + szBuf + 16>], loadE6;
+-:-:-:-:00 STS [writeS + 4x<11*128 + szBuf + 16>], loadE7;
+
+-:-:-:-:00 IADD.X trackI1, trackI1, RZ;
+
+-:-:-:-:00 IADD trackE0.CC, trackE0, 4x<16>;
+
+-:-:-:-:00 IADD readEs,  readEs, -swapBuf;
+-:-:-:-:00 IADD readIs,  readIs, -swapBuf;
+-:-:-:-:00 BAR.SYNC 0;
+-:-:-:-:00 IADD writeS, writeS, swapBuf;
+-:-:-:-:00 IADD swapBuf, RZ, -swapBuf;
+
+-:-:-:-:00 IADD.X trackE1, trackE1, RZ;
+
+-:-:-:-:00 @P2 LD.E.CI.128 loadI0, [trackI + 4x<0>];
+-:-:-:-:00 @P2 LD.E.CI.128 loadI4, [trackI + 4x<8>];
+-:-:-:-:00 @P3 LD.E.CI.128 loadE0, [trackE + 4x<0>];
+-:-:-:-:00 @P3 LD.E.CI.128 loadE4, [trackE + 4x<8>];
+
+-:-:-:-:00 @P2 IADD   trackI0.CC, trackI0, 4x<16>;
+-:-:-:-:00 @P2 IADD.X trackI1, trackI1, RZ;
+-:-:-:-:00 @P3 IADD   trackE0.CC, trackE0, 4x<16>;
+-:-:-:-:00 @P3 IADD.X trackE1, trackE1, RZ;
+
+-:-:-:-:00 @P5 BRA.U NEXT_Q;
+-:-:-:-:00 @P6 BRA.U NEXT_P;
+
+-:-:-:-:00 ISETP.LT.AND P5, PT, q, param_Q, PT;
+-:-:-:-:00 ISETP.LT.AND P6, PT, p, param_P, PT;
+
+NEXT_PQ:
+
+-:-:-:-:00 LDS.128 j0Ex0, [readEs + 4x<0*128 + 00>];
+-:-:-:-:00 LDS.128 j0Iy0, [readIs + 4x<0*128 + 00>];
+-:-:-:-:00 LDS.128 j0Ex4, [readEs + 4x<0*128 + 64>];
+-:-:-:-:00 LDS.128 j0Iy4, [readIs + 4x<0*128 + 64>];
+
+// P0 loop N
+// P2 bounds I
+// P3 bounds E
+// P4 bounds yz
+// P5 loop Q
+// P6 loop P
+
+//loop = N >= 16 && (N >= 32 || (!p5 && !p6))
+
+NEXT_16N:
+
+<CODE>
+
+    my %insert =
+    (
+        j0c8   => "-:-:-:-:00 IADD loopN, loopN, -16;\n",
+        j0c14  => "-:-:-:-:00 ISETP.GE.AND P0, PT, loopN, 16, PT;\n",
+
+        j4c8   => "-:-:-:-:00 \@P0 STS [writeS + 4x< 0*128>], loadI0;\n",
+        j4c10  => "-:-:-:-:00 \@P0 STS [writeS + 4x< 1*128>], loadI1;\n",
+        j4c12  => "-:-:-:-:00 \@P0 STS [writeS + 4x< 2*128>], loadI2;\n",
+        j4c14  => "-:-:-:-:00 \@P0 STS [writeS + 4x< 3*128>], loadI3;\n",
+
+        j5c8   => "-:-:-:-:00 \@P0 STS [writeS + 4x< 8*128 + 16>], loadI4;\n",
+        j5c10  => "-:-:-:-:00 \@P0 STS [writeS + 4x< 9*128 + 16>], loadI5;\n",
+        j5c12  => "-:-:-:-:00 \@P0 STS [writeS + 4x<10*128 + 16>], loadI6;\n",
+        j5c14  => "-:-:-:-:00 \@P0 STS [writeS + 4x<11*128 + 16>], loadI7;\n",
+
+        j5c16  => "-:-:-:-:00 ISETP.GE.AND P2, PT, loopN, 32, P2;\n",
+
+        j5c60  => "-:-:-:-:00 \@P2 LD.E.CI.128 loadI0, [trackI + 4x<0>];\n",
+        j5c62  => "-:-:-:-:00 \@P2 LD.E.CI.128 loadI4, [trackI + 4x<8>];\n",
+
+        j6c16  => "-:-:-:-:00 \@!P2 LDS.128 loadI0, [RZ + addr_zero];\n",
+        j7c16  => "-:-:-:-:00 \@!P2 LDS.128 loadI4, [RZ + addr_zero];\n",
+
+        j10c57 => "-:-:-:-:00 \@P2 IADD   trackI0.CC, trackI0, 4x<16>;\n",
+        j10c62 => "-:-:-:-:00 \@P2 IADD.X trackI1,    trackI1, RZ;\n",
+
+        j12c8  => "-:-:-:-:00 \@P0 STS [writeS + 4x<0*128 + szBuf>], loadE0;\n",
+        j12c10 => "-:-:-:-:00 \@P0 STS [writeS + 4x<1*128 + szBuf>], loadE1;\n",
+        j12c12 => "-:-:-:-:00 \@P0 STS [writeS + 4x<2*128 + szBuf>], loadE2;\n",
+        j12c14 => "-:-:-:-:00 \@P0 STS [writeS + 4x<3*128 + szBuf>], loadE3;\n",
+
+        j13c8  => "-:-:-:-:00 \@P0 STS [writeS + 4x<8*128 + szBuf + 16>], loadE4;\n",
+        j13c10 => "-:-:-:-:00 \@P0 STS [writeS + 4x<9*128 + szBuf + 16>], loadE5;\n",
+        j13c12 => "-:-:-:-:00 \@P0 STS [writeS + 4x<10*128 + szBuf + 16>], loadE6;\n",
+        j13c14 => "-:-:-:-:00 \@P0 STS [writeS + 4x<11*128 + szBuf + 16>], loadE7;\n",
+
+        j13c16 => "-:-:-:-:00 ISETP.GE.AND P3, PT, loopN, 32, P3;\n",
+
+        j13c60 => "-:-:-:-:00 \@P3 LD.E.CI.128 loadE0, [trackE + 4x<0>];\n",
+        j13c62 => "-:-:-:-:00 \@P3 LD.E.CI.128 loadE4, [trackE + 4x<8>];\n",
+
+        j14c16 => "-:-:-:-:00 @!P3 LDS.128 loadE0, [RZ + addr_zero];\n",
+        j15c16 => "-:-:-:-:00 @!P3 LDS.128 loadE4, [RZ + addr_zero];\n",
+
+        j15c57 => "-:-:-:-:00 \@P3 IADD   trackE0.CC, trackE0, 4x<16>;\n",
+        j15c62 => "-:-:-:-:00 \@P3 IADD.X trackE1,    trackE1, RZ;\n",
+
+        j14c63 => "-:-:-:-:00 \@P0 BAR.SYNC 0;\n" .
+                  "-:-:-:-:00 \@P0 IADD readEs, readEs, -swapBuf;\n" .
+                  "-:-:-:-:00 \@P0 IADD readIs, readIs, -swapBuf;\n" .
+                  "-:-:-:-:00 \@P0 IADD writeS, writeS,  swapBuf;\n" .
+                  "-:-:-:-:00 \@P0 IADD swapBuf, RZ,    -swapBuf;\n",
+
+        j15c24 => "-:-:-:-:00 ISETP.GT.AND P1, PT, loopN, 32, PT;\n",
+        j15c37 => "-:-:-:-:00 PSETP.AND.OR P1, PT, !P5, !P6, P1;\n",
+        j15c50 => "-:-:-:-:00 PSETP.AND.AND P0, PT, P0, P1, PT;\n",
+
+        j15c63 => "-:-:-:-:00 \@P0 BRA.U NEXT_16N;\n" .
+                  "-:-:-:-:00 \@P5 BRA.U NEXT_Q;\n" .
+                  "-:-:-:-:00 \@P6 BRA.U NEXT_P;\n",
+    );
+
+    my @cOrder;
+    my @swirl = ([0,2],[1,2],[1,0],[0,0]);
+    my @y = (0,1,4,5);
+    foreach my $x (0,2,4,6)
+    {
+        foreach my $y (@y)
+        {
+            push @cOrder, [$x + $_->[0], $y + $_->[1]] foreach @swirl;
+        }
+        @y = reverse @y;
+    }
+
+    my $out;
+    foreach my $j (0 .. 15)
+    {
+        my $odd      = $j & 1;
+        my $nOdd     = 1 - $odd;
+        my $rsOffset = ($j + 1) & 15;
+        my $rsPred   = $j == 15 ? '@P0' : '   ';
+        my $shift    = $rsOffset < 4 ? 0 : $rsOffset < 12 ? 1 : 2;
+        my $barrier  = $j == 14 ? '6' : '-';
+
+        $insert{"j${j}c0"} = sprintf "-:-:-:-:00 %s LDS.128 j%dEx0, [readEs + 4x<%d*128 + 00 + %d*16>];\n", $rsPred, $nOdd, $rsOffset, $shift;
+        $insert{"j${j}c2"} = sprintf "-:-:-:-:00 %s LDS.128 j%dIy0, [readIs + 4x<%d*128 + 00 + %d*16>];\n", $rsPred, $nOdd, $rsOffset, $shift;
+        $insert{"j${j}c4"} = sprintf "-:-:-:-:00 %s LDS.128 j%dEx4, [readEs + 4x<%d*128 + 64 + %d*16>];\n", $rsPred, $nOdd, $rsOffset, $shift;
+        $insert{"j${j}c6"} = sprintf "-:-:-:-:00 %s LDS.128 j%dIy4, [readIs + 4x<%d*128 + 64 + %d*16>];\n", $rsPred, $nOdd, $rsOffset, $shift;
+
+        foreach my $c (0 .. 63)
+        {
+            my ($x,$y) = @{$cOrder[$c]};
+
+            my $ins    = $insert{"j${j}c$c"} || '';
+
+            my $stall  = $ins =~ /LDS|I2I|F2F|LD|STS|BAR|BRA/ ? 0 : 1;
+
+            my $yield  = $c == 32 && $stall ? 'Y' : '-';
+
+            my $wait   = $c == 0 ? '01' : '--';
+
+            my $ctrl   = "-:-:-:-:00";
+
+            $out .= sprintf "%s FFMA cx%dy%d, j%dEx%d, j%dIy%d, cx%dy%d;\n%s", $ctrl,  $x,$y,  $odd,$x,  $odd,$y,  $x,$y,  $ins;
+        }
+    }
+    return $out;
+
+</CODE>
+
+-:-:-:-:00 S2R tid,  SR_TID.X;
+-:-:-:-:00 S2R blkI, SR_CTAID.Y;
+-:-:-:-:00 S2R blkE, SR_CTAID.Z;
+
+-:-:-:-:00 ISETP.GT.AND P0, PT, swapBuf, RZ, PT;
+-:-:-:-:00 IADD readEs,  readEs, -4x<szBuf>;
+-:-:-:-:00 @P0 IADD readIs,  readIs, -swapBuf;
+-:-:-:-:00 @P0 IADD readEs,  readEs, -swapBuf;
+
+// writeCs = (readIs / 4) * 128 + readEs;
+-:-:-:-:00 ISCADD  writeCs, readIs, readEs, 5;
+
+-:-:-:-:00 LOP.AND tid31,  tid,  31;
+-:-:-:-:00 LOP.AND tid96,  tid,  96;
+-:-:-:-:00 LOP.AND t128,   tid, 128;
+
+// kk = tid31 | (t128 >> 2);
+-:-:-:-:00 SHR.U32  kk, t128, 2;
+-:-:-:-:00 LOP.OR   kk, tid31,  kk;
+
+// readCs = ((tid96 << 4) | kk) << 2;
+-:-:-:-:00 SHL     readCs, tid96,  4;
+-:-:-:-:00 LOP.OR  readCs, readCs, kk;
+-:-:-:-:00 SHL     readCs, readCs, 2;
+
+// kk += blkE*128;
+-:-:-:-:00 ISCADD  kk, blkE, kk, 7;
+
+// crst = blkI*128 + (tid96 >> 1)
+-:-:-:-:00 SHR.U32 crst00, tid96, 1;
+-:-:-:-:00 ISCADD  crst00, blkI, crst00, 7;
+-:-:-:-:00 IADD    crst04, crst00,  4;
+-:-:-:-:00 IADD    crst08, crst00,  8;
+-:-:-:-:00 IADD    crst12, crst00,  12;
+
+-:-:-:-:00 MOV K, param_K;
+-:-:-:-:00 SHL K1, K, 2;
+-:-:-:-:00 SHL K4, K, 4;
+-:-:-:-:00 ISCADD K60, K, -K4, 8;
+
+// trackF += crst*K + k;
+-:-:-:-:00 IMAD tmp_param0, crst00, K, RZ;
+-:-:-:-:00 IADD tf, tmp_param0, kk;
+//-:-:-:-:00 LEA      track00F0.CC, tf, param_F[0],     0x2;
+//-:-:-:-:00 LEA.HI.X track00F1,    tf, param_F[1], RZ, 0x2;
+-:-:-:-:00 MOV tmp_param0, param_F[0];
+-:-:-:-:00 MOV tmp_param1, param_F[1];
+-:-:-:-:00 SHL tmp_shl, tf, 0x2;
+-:-:-:-:00 IADD track00F0.CC, tmp_shl, tmp_param0;
+-:-:-:-:00 IADD.X track00F1, RZ, tmp_param1;
+
+// kk < K
+-:-:-:-:00 ISETP.LT.AND P5, PT, kk, param_K, PT;
+-:-:-:-:00 IADD kk, kk, 64;
+-:-:-:-:00 ISETP.LT.AND P6, PT, kk, param_K, PT;
+
+-:-:-:-:00 MOV alpha, param_alpha;
+
+-:-:-:-:00 IADD   track04F0.CC, track00F0, K4;
+-:-:-:-:00 IADD.X track04F1,    track00F1, RZ;
+-:-:-:-:00 IADD   track08F0.CC, track04F0, K4;
+-:-:-:-:00 IADD.X track08F1,    track04F1, RZ;
+-:-:-:-:00 IADD   track12F0.CC, track08F0, K4;
+-:-:-:-:00 IADD.X track12F1,    track08F1, RZ;
+
+-:-:-:-:00 BAR.SYNC 0;
+
+<CODE>
+
+    my $out;
+    foreach my $y (0..7)
+    {
+        $out .=
+            "-:-:-:-:00 IADD   track00F0.CC, track00F0, K60;\n" .
+            "-:-:-:-:00 IADD   crst00,       crst00,     60;\n" .
+            "-:-:-:-:00 IADD.X track00F1,    track00F1,  RZ;\n" .
+            "-:-:-:-:00 IADD   track04F0.CC, track04F0, K60;\n" .
+            "-:-:-:-:00 IADD   crst04,       crst04,     60;\n" .
+            "-:-:-:-:00 IADD.X track04F1,    track04F1,  RZ;\n" .
+            "-:-:-:-:00 IADD   track08F0.CC, track08F0, K60;\n" .
+            "-:-:-:-:00 IADD   crst08,       crst08,     60;\n" .
+            "-:-:-:-:00 IADD.X track08F1,    track08F1,  RZ;\n" .
+            "-:-:-:-:00 IADD   track12F0.CC, track12F0, K60;\n" .
+            "-:-:-:-:00 IADD   crst12,       crst12,     60;\n" .
+            "-:-:-:-:00 IADD.X track12F1,    track12F1,  RZ;\n\n"  if $y == 4;
+
+        $out .= sprintf(
+            "-:-:-:-:00 FMUL c0, cx0y%d, alpha;\n" .
+            "-:-:-:-:00 FMUL c1, cx1y%d, alpha;\n" .
+            "-:-:-:-:00 FMUL c2, cx2y%d, alpha;\n" .
+            "-:-:-:-:00 FMUL c3, cx3y%d, alpha;\n" .
+            "-:-:-:-:00 FMUL c4, cx4y%d, alpha;\n" .
+            "-:-:-:-:00 FMUL c5, cx5y%d, alpha;\n" .
+            "-:-:-:-:00 FMUL c6, cx6y%d, alpha;\n" .
+            "-:-:-:-:00 FMUL c7, cx7y%d, alpha;\n",
+            ($y) x 8);
+
+        $out .= "-:-:-:-:00 CAL STORE_C;\n\n";
+    }
+    return $out;
+
+</CODE>
+
+-:-:-:-:00 EXIT;
+
+STORE_C:
+
+-:-:-:-:00 ISETP.LT.AND P0, PT, crst00, param_CRST, P5; // crst00 < CRST && k < K
+-:-:-:-:00 IADD         crst00, crst00, 1;
+-:-:-:-:00 ISETP.LT.AND P1, PT, crst04, param_CRST, P5; // crst04 < CRST && k < K
+-:-:-:-:00 IADD         crst04, crst04, 1;
+-:-:-:-:00 ISETP.LT.AND P2, PT, crst08, param_CRST, P5; // crst08 < CRST && k < K
+-:-:-:-:00 IADD         crst08, crst08, 1;
+-:-:-:-:00 ISETP.LT.AND P3, PT, crst12, param_CRST, P5; // crst12 < CRST && k < K
+-:-:-:-:00 IADD         crst12, crst12, 1;
+
+// Warp shuffle to drop the awkward readAs/readBs mapping
+-:-:-:-:00 STS.128 [writeCs+4x<00>], c0;
+-:-:-:-:00 STS.128 [writeCs+4x<64>], c4;
+
+-:-:-:-:00 LDS c0, [readCs + 4x<0*128 + 00>];
+-:-:-:-:00 LDS c2, [readCs + 4x<1*128 + 00>];
+-:-:-:-:00 LDS c4, [readCs + 4x<2*128 + 00>];
+-:-:-:-:00 LDS c6, [readCs + 4x<3*128 + 00>];
+
+-:-:-:-:00 @P0 RED.E.ADD.F32.FTZ.RN [track00F], c0;
+-:-:-:-:00 PSETP.AND.AND P0, PT, P0, P6, PT;
+-:-:-:-:00 @P1 RED.E.ADD.F32.FTZ.RN [track04F], c2;
+-:-:-:-:00 PSETP.AND.AND P1, PT, P1, P6, PT;
+-:-:-:-:00 @P2 RED.E.ADD.F32.FTZ.RN [track08F], c4;
+-:-:-:-:00 PSETP.AND.AND P2, PT, P2, P6, PT;
+-:-:-:-:00 @P3 RED.E.ADD.F32.FTZ.RN [track12F], c6;
+-:-:-:-:00 PSETP.AND.AND P3, PT, P3, P6, PT;
+
+-:-:-:-:00 LDS c1, [readCs + 4x<0*128 + 64>];
+-:-:-:-:00 LDS c3, [readCs + 4x<1*128 + 64>];
+-:-:-:-:00 LDS c5, [readCs + 4x<2*128 + 64>];
+-:-:-:-:00 LDS c7, [readCs + 4x<3*128 + 64>];
+
+-:-:-:-:00 @P0 RED.E.ADD.F32.FTZ.RN [track00F + 4x<64>], c1;
+-:-:-:-:00 @P1 RED.E.ADD.F32.FTZ.RN [track04F + 4x<64>], c3;
+-:-:-:-:00 @P2 RED.E.ADD.F32.FTZ.RN [track08F + 4x<64>], c5;
+-:-:-:-:00 @P3 RED.E.ADD.F32.FTZ.RN [track12F + 4x<64>], c7;
+
+-:-:-:-:00 IADD   track00F0.CC, track00F0, K1;
+-:-:-:-:00 IADD.X track00F1,    track00F1, RZ;
+-:-:-:-:00 IADD   track04F0.CC, track04F0, K1;
+-:-:-:-:00 IADD.X track04F1,    track04F1, RZ;
+-:-:-:-:00 IADD   track08F0.CC, track08F0, K1;
+-:-:-:-:00 IADD.X track08F1,    track08F1, RZ;
+-:-:-:-:00 IADD   track12F0.CC, track12F0, K1;
+-:-:-:-:00 IADD.X track12F1,    track12F1, RZ;
+
+-:-:-:-:00 RET;
